@@ -28,17 +28,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
-    if ($accion === 'whatsapp') {
+    if ($accion === 'whatsapp' || $accion === 'wa_verificar') {
         $ancla = '#whatsapp';
         $token = trim((string)($_POST['wa_token'] ?? ''));
         if ($token !== '') guardar_ajuste('wa_token', preg_replace('/\s+/', '', $token));
         guardar_ajuste('wa_phone_id', solo_digitos((string)($_POST['wa_phone_id'] ?? '')));
+        guardar_ajuste('wa_waba_id', solo_digitos((string)($_POST['wa_waba_id'] ?? '')));
         $v = trim((string)($_POST['wa_verify'] ?? ''));
         if (preg_match('/^[A-Za-z0-9_\-.]{4,80}$/', $v)) guardar_ajuste('wa_verify', $v);
         else flash('error', 'El token de verificación solo puede tener letras, números, guiones y puntos (mínimo 4). Dejé el anterior.');
         $ver = trim((string)($_POST['wa_version'] ?? 'v23.0'));
         guardar_ajuste('wa_version', preg_match('/^v\d+\.\d+$/', $ver) ? $ver : 'v23.0');
-        flash('ok', 'Ajustes de WhatsApp guardados.');
+        if ($accion === 'whatsapp') flash('ok', 'Ajustes de WhatsApp guardados. Ahora toca "Verificar y conectar con Meta".');
+    }
+
+    if ($accion === 'wa_verificar') {
+        $ancla = '#whatsapp';
+        $res = wa_verificar();
+        $todo_ok = !in_array(false, array_column($res, 0), true);
+        $texto = implode("\n", array_map(fn($x) => ($x[0] ? '✅ ' : '❌ ') . $x[1], $res));
+        flash($todo_ok ? 'ok' : 'error', $todo_ok ? '✅ Todo listo con Meta.' : 'Revisa esto:', $texto);
     }
 
     if ($accion === 'wa_prueba') {
@@ -129,6 +138,9 @@ cabecera('Ajustes', 'ajustes');
             <label>Phone number ID
                 <input name="wa_phone_id" value="<?= h(ajuste('wa_phone_id')) ?>" inputmode="numeric" placeholder="Ej: 123456789012345">
             </label>
+            <label>WhatsApp Business Account ID
+                <input name="wa_waba_id" value="<?= h(ajuste('wa_waba_id')) ?>" inputmode="numeric" placeholder="Está debajo del Phone number ID">
+            </label>
             <label>Token de verificación (lo inventas tú; pégalo igual en Meta)
                 <input name="wa_verify" value="<?= h($verify) ?>">
             </label>
@@ -136,7 +148,10 @@ cabecera('Ajustes', 'ajustes');
                 <input name="wa_version" value="<?= h(version_graph()) ?>">
             </label>
         </div>
-        <button class="btn" type="submit">Guardar</button>
+        <div class="acciones">
+            <button class="btn" type="submit">Guardar</button>
+            <button class="btn btn-sec" type="submit" name="accion" value="wa_verificar">Verificar y conectar con Meta</button>
+        </div>
     </form>
 
     <div class="caja-dato">

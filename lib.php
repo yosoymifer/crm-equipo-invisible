@@ -578,6 +578,54 @@ function wa_llamar(string $telefono, array $mensaje): array
     return ['ok' => false, 'wa_id' => null, 'error' => $error, 'respuesta' => $r['raw']];
 }
 
+// Comprueba token + Phone number ID y, si hay WhatsApp Business Account ID, suscribe la app a esa cuenta
+// (sin esa suscripción, con números reales los mensajes no llegan al webhook).
+// Devuelve una lista de [ok(bool), texto].
+function wa_verificar(): array
+{
+    $token = trim(ajuste('wa_token'));
+    $pid = solo_digitos(ajuste('wa_phone_id'));
+    $waba = solo_digitos(ajuste('wa_waba_id'));
+    $base = 'https://graph.facebook.com/' . version_graph() . '/';
+    $aut = ['Authorization: Bearer ' . $token];
+    $res = [];
+    if ($token === '' || $pid === '') return [[false, 'Primero guarda el token de acceso y el Phone number ID.']];
+
+    $r = http_json($base . $pid . '?fields=display_phone_number,verified_name', $aut, null, 20);
+    $j = $r['json'] ?? [];
+    if ($r['ok'] && $r['status'] === 200 && !empty($j['display_phone_number'])) {
+        $res[] = [true, 'Token y Phone number ID correctos. Número: ' . $j['display_phone_number'] . ' (' . ($j['verified_name'] ?? '') . ').'];
+    } else {
+        $cod = (int)($j['error']['code'] ?? 0);
+        $msg = $r['ok'] ? (string)($j['error']['message'] ?? $r['raw']) : $r['error'];
+        $pista = $cod === 190 ? ' 👉 El token venció o está mal copiado.' : ($cod === 100 ? ' 👉 Revisa el Phone number ID: es el número largo de "Phone number ID", no tu teléfono.' : '');
+        $res[] = [false, 'Meta no aceptó tus datos: ' . $msg . $pista];
+        return $res;
+    }
+
+    if ($waba === '') {
+        $res[] = [false, 'Falta el WhatsApp Business Account ID: pégalo y guarda para conectar tu app a tu cuenta.'];
+        return $res;
+    }
+    // POST sin cuerpo a /{waba}/subscribed_apps
+    $ch = curl_init($base . $waba . '/subscribed_apps');
+    $op = [CURLOPT_RETURNTRANSFER => true, CURLOPT_POST => true, CURLOPT_POSTFIELDS => '', CURLOPT_TIMEOUT => 20, CURLOPT_HTTPHEADER => $aut];
+    if (defined('CURLSSLOPT_NATIVE_CA')) $op[CURLOPT_SSL_OPTIONS] = CURLSSLOPT_NATIVE_CA;
+    curl_setopt_array($ch, $op);
+    $raw = (string)curl_exec($ch);
+    $err = curl_error($ch);
+    curl_close($ch);
+    $j = json_decode($raw, true) ?: [];
+    if (!empty($j['success'])) {
+        $res[] = [true, 'Tu app quedó conectada a tu cuenta de WhatsApp Business. Los mensajes van a llegar a tu webhook.'];
+    } else {
+        $msg = $err ?: (string)($j['error']['message'] ?? $raw);
+        $res[] = [false, 'No pude conectar tu app con la cuenta de WhatsApp Business: ' . $msg . ' 👉 Revisa el WhatsApp Business Account ID (está en API Setup, debajo del Phone number ID).'];
+    }
+    registrar('WhatsApp: verificación → ' . implode(' | ', array_map(fn($x) => ($x[0] ? 'OK ' : 'ERROR ') . $x[1], $res)));
+    return $res;
+}
+
 function wa_enviar(string $telefono, string $texto): array
 {
     return wa_llamar($telefono, ['type' => 'text', 'text' => ['preview_url' => false, 'body' => $texto]]);
