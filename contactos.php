@@ -6,7 +6,7 @@ $u = requiere_login();
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['accion'] ?? '') === 'agregar') {
     $nombre = trim((string)($_POST['nombre'] ?? ''));
     $tel = normalizar_telefono((string)($_POST['telefono'] ?? ''));
-    $correo = trim((string)($_POST['correo'] ?? ''));
+    $correo = mb_substr(trim((string)($_POST['correo'] ?? '')), 0, 190);
     $etapa = in_array($_POST['etapa'] ?? '', ETAPAS, true) ? $_POST['etapa'] : 'Nuevo';
     $origen = in_array($_POST['origen'] ?? '', ORIGENES, true) ? $_POST['origen'] : 'Manual';
     $pa = trim((string)($_POST['proxima_accion'] ?? ''));

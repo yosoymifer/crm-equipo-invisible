@@ -70,6 +70,64 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         flash('ok', 'Widget guardado. Copia el código de nuevo si cambiaste algo.');
     }
 
+    if ($accion === 'pasar_mysql') {
+        $ancla = '#base';
+        $c = [
+            'servidor' => trim((string)($_POST['servidor'] ?? '')) ?: 'localhost',
+            'puerto' => (int)($_POST['puerto'] ?? 0) ?: 3306,
+            'base' => trim((string)($_POST['base'] ?? '')) ?: 'crm',
+            'usuario' => trim((string)($_POST['usuario'] ?? '')) ?: 'root',
+            'clave' => (string)($_POST['clave'] ?? ''),
+        ];
+        $copiar = isset($_POST['copiar']);
+        $_SESSION['form_mysql'] = ['servidor' => $c['servidor'], 'puerto' => $c['puerto'], 'base' => $c['base'], 'usuario' => $c['usuario'], 'copiar' => $copiar];
+        if (db_motor() === 'mysql') {
+            flash('error', 'Ya estás usando MySQL.');
+        } elseif (!preg_match('/^[A-Za-z0-9.\-_]{1,255}$/', $c['servidor'])) {
+            flash('error', 'El servidor no es válido. En Laragon es: localhost');
+        } elseif (!preg_match('/^[A-Za-z0-9_]{1,64}$/', $c['base'])) {
+            flash('error', 'El nombre de la base solo puede tener letras, números y guion bajo (ej: crm).');
+        } else {
+            try {
+                $my = conectar_mysql($c, true);
+                crear_tablas($my, 'mysql');
+                $n = contar_filas($my);
+                if ($copiar && array_sum($n) > 0) {
+                    flash('error', 'La base «' . $c['base'] . '» ya tiene datos (' . $n['usuarios'] . ' usuario(s), ' . $n['contactos'] . ' contacto(s), '
+                        . $n['mensajes'] . ' mensaje(s)). Para no duplicar nada, no copié y sigues en SQLite.',
+                        "Tienes dos opciones:\n• Escribe otro nombre de base (se crea nueva y vacía) y vuelve a tocar el botón.\n• O, si quieres usar los datos que ya están en esa base, desmarca «Copiar mis datos actuales».");
+                } else {
+                    $copiados = $copiar ? copiar_datos(db(), $my) : null;
+                    if (!escribir_conexion($c)) {
+                        flash('error', 'Conecté con MySQL pero no pude guardar el archivo datos/conexion.php. Sigues en SQLite. Revisa que la carpeta datos/ se pueda escribir.');
+                    } else {
+                        registrar('Base de datos: el CRM ahora usa MySQL (' . $c['usuario'] . '@' . $c['servidor'] . ':' . $c['puerto'] . '/' . $c['base'] . ').');
+                        unset($_SESSION['form_mysql']);
+                        if ($copiados) {
+                            flash('ok', '✅ ¡Listo! Tu CRM ahora usa MySQL (base «' . $c['base'] . '»). Copié ' . $copiados['usuarios'] . ' usuario(s), '
+                                . $copiados['contactos'] . ' contacto(s), ' . $copiados['mensajes'] . ' mensaje(s) y ' . $copiados['ajustes'] . ' ajuste(s).');
+                        } else {
+                            flash('ok', '✅ ¡Listo! Tu CRM ahora usa MySQL (base «' . $c['base'] . '»). No copié datos: usas lo que ya había en esa base.'
+                                . ($n['usuarios'] === 0 ? ' Como la base no tenía cuentas, tendrás que crear tu cuenta de nuevo.' : ''));
+                        }
+                    }
+                }
+            } catch (Throwable $e) {
+                flash('error', '❌ No pude pasar a MySQL. Sigues en SQLite, no se perdió nada. ' . explicar_error_mysql($e->getMessage()), $e->getMessage());
+            }
+        }
+    }
+
+    if ($accion === 'volver_sqlite') {
+        $ancla = '#base';
+        if (db_motor() === 'mysql' && @unlink(archivo_conexion())) {
+            registrar('Base de datos: el CRM volvió a SQLite.');
+            flash('ok', 'Volviste a SQLite. Ves los datos que tenías antes de pasar a MySQL. Lo que hiciste mientras usabas MySQL se queda en MySQL.');
+        } else {
+            flash('error', 'No pude volver a SQLite. Borra a mano el archivo datos/conexion.php.');
+        }
+    }
+
     if ($accion === 'vaciar_registro') {
         $ancla = '#registro';
         @file_put_contents(CRM_DATOS . '/registro.log', '');
@@ -86,6 +144,19 @@ $webhook = base_url() . '/webhook.php';
 $ruta_webhook = base_path() . '/webhook.php';
 $w_titulo = ajuste('widget_titulo') ?: nombre_agente();
 $w_color = ajuste('widget_color', '#4f46e5') ?: '#4f46e5';
+
+function explicar_error_mysql(string $m): string
+{
+    if (str_contains($m, '1045') || stripos($m, 'Access denied') !== false) return 'El usuario o la contraseña de MySQL no son correctos (en Laragon: usuario root y contraseña vacía).';
+    if (str_contains($m, '2002') || str_contains($m, '10061') || stripos($m, 'refused') !== false) return 'MySQL no responde: ¿está encendido? En Laragon toca Start All.';
+    if (str_contains($m, '2005') || stripos($m, 'Unknown MySQL server host') !== false) return 'No encuentro ese servidor. En Laragon es: localhost';
+    if (str_contains($m, '1049') || str_contains($m, '1044')) return 'La base no existe y tu usuario no tiene permiso para crearla. Créala primero (en Laragon: botón Database) o usa root.';
+    if (stripos($m, 'pdo_mysql') !== false) return 'Activa pdo_mysql: Laragon → PHP → Extensions → pdo_mysql.';
+    return 'Revisa los datos e inténtalo de nuevo.';
+}
+
+$mysql = conexion_mysql();
+$fm = ($_SESSION['form_mysql'] ?? []) + ['servidor' => 'localhost', 'puerto' => 3306, 'base' => 'crm', 'usuario' => 'root', 'copiar' => true];
 
 $lineas = [];
 $archivo = CRM_DATOS . '/registro.log';
@@ -195,8 +266,35 @@ cabecera('Ajustes', 'ajustes');
     </div>
 </section>
 
+<section class="tarjeta" id="base">
+    <h2><span class="num">4</span> Base de datos</h2>
+    <?php if ($mysql): ?>
+        <div class="aviso aviso-ok">Ahora usas <b>MySQL</b>: base «<?= h($mysql['base']) ?>» en <?= h($mysql['servidor'] . ':' . $mysql['puerto']) ?> (usuario <?= h($mysql['usuario']) ?>).</div>
+        <form method="post" onsubmit="return confirm('¿Volver a SQLite? Verás los datos que tenías antes de pasar a MySQL. Lo que hiciste en MySQL se queda en MySQL.')">
+            <?= csrf_campo() ?><input type="hidden" name="accion" value="volver_sqlite">
+            <button class="btn btn-sec" type="submit">Volver a SQLite</button>
+        </form>
+        <p class="suave chico">Si vuelves a SQLite, lo que hiciste mientras usabas MySQL se queda en MySQL (no se copia de vuelta).</p>
+    <?php else: ?>
+        <div class="aviso aviso-ok">Ahora usas <b>SQLite</b>: un archivo en tu PC (datos/crm.sqlite). No necesitas nada más. Solo cambia a MySQL si lo prefieres.</div>
+        <p class="suave">¿Prefieres MySQL? En Laragon los datos ya vienen puestos: servidor <b>localhost</b>, puerto <b>3306</b>, usuario <b>root</b> y contraseña <b>vacía</b>. Si la base no existe, la creo.</p>
+        <form method="post" class="formulario">
+            <?= csrf_campo() ?><input type="hidden" name="accion" value="pasar_mysql">
+            <div class="rejilla-2">
+                <label>Servidor<input name="servidor" value="<?= h($fm['servidor']) ?>" placeholder="localhost"></label>
+                <label>Puerto<input name="puerto" value="<?= h($fm['puerto']) ?>" inputmode="numeric" placeholder="3306"></label>
+                <label>Nombre de la base<input name="base" value="<?= h($fm['base']) ?>" placeholder="crm"></label>
+                <label>Usuario<input name="usuario" value="<?= h($fm['usuario']) ?>" placeholder="root" autocomplete="off"></label>
+                <label>Contraseña<input type="password" name="clave" placeholder="En Laragon se deja vacía" autocomplete="new-password"></label>
+            </div>
+            <label class="casilla"><input type="checkbox" name="copiar" value="1"<?= $fm['copiar'] ? ' checked' : '' ?>> Copiar mis datos actuales (tu cuenta, contactos, conversaciones y llaves)</label>
+            <button class="btn" type="submit">Probar y pasar a MySQL</button>
+        </form>
+    <?php endif; ?>
+</section>
+
 <section class="tarjeta" id="registro">
-    <h2><span class="num">4</span> Registro</h2>
+    <h2><span class="num">5</span> Registro</h2>
     <p class="suave">Aquí ves lo que va pasando: si Meta está llegando, si Gemini o WhatsApp dieron algún error. Últimas 60 líneas.</p>
     <pre class="registro"><?= $lineas ? h(implode("\n", $lineas)) : 'Todavía no hay nada en el registro.' ?></pre>
     <div class="acciones">

@@ -1,4 +1,5 @@
 FROM php:8.3-apache
+RUN docker-php-ext-install pdo_mysql
 COPY . /var/www/html/
 ENV CRM_DATOS=/var/www/datos
 RUN mkdir -p /var/www/datos && chown -R www-data:www-data /var/www/datos \

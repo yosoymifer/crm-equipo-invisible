@@ -68,9 +68,6 @@ function fallo_fatal(string $titulo, string $detalle, int $codigo = 500): void
     exit;
 }
 
-if (!extension_loaded('pdo_sqlite')) {
-    fallo_fatal('Falta activar pdo_sqlite en PHP', 'En Laragon: clic derecho en la ventana de Laragon → PHP → Extensions → marca pdo_sqlite. Luego reinicia (Stop / Start All) y recarga esta página.');
-}
 
 function es_https(): bool
 {
@@ -129,6 +126,7 @@ function normalizar_telefono(?string $tel): ?string
     $d = solo_digitos($tel);
     if ($d === '') return null;
     if (strlen($d) === 11 && $d[0] === '0') $d = '58' . substr($d, 1);
+    $d = substr($d, 0, 20);
     return $d;
 }
 
@@ -148,6 +146,201 @@ function json_salida($datos, int $codigo = 200): void
 }
 
 // ---------------------------------------------------------------- base de datos
+// Por defecto: SQLite (archivo datos/crm.sqlite). Si existe datos/conexion.php con tipo "mysql", se usa MySQL.
+
+const TABLAS = ['usuarios', 'contactos', 'mensajes', 'ajustes'];
+
+function archivo_conexion(): string
+{
+    return CRM_DATOS . '/conexion.php';
+}
+
+// Datos de conexión MySQL guardados, o null si se usa SQLite.
+function conexion_mysql(): ?array
+{
+    $f = archivo_conexion();
+    if (!is_file($f)) return null;
+    $c = @include $f;
+    if (!is_array($c) || ($c['tipo'] ?? '') !== 'mysql') return null;
+    return $c + ['servidor' => 'localhost', 'puerto' => 3306, 'base' => 'crm', 'usuario' => 'root', 'clave' => ''];
+}
+
+function db_motor(): string
+{
+    return conexion_mysql() ? 'mysql' : 'sqlite';
+}
+
+// Conecta a MySQL. Si $crear_base, crea la base si no existe. Lanza PDOException si falla.
+function conectar_mysql(array $c, bool $crear_base = false): PDO
+{
+    if (!extension_loaded('pdo_mysql')) {
+        throw new PDOException('Falta activar la extensión pdo_mysql de PHP (Laragon → PHP → Extensions → pdo_mysql).');
+    }
+    $base = (string)$c['base'];
+    if (!preg_match('/^[A-Za-z0-9_]{1,64}$/', $base)) {
+        throw new PDOException('El nombre de la base solo puede tener letras, números y guion bajo.');
+    }
+    $op = [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_TIMEOUT => 5,
+    ];
+    $dsn = 'mysql:host=' . $c['servidor'] . ';port=' . (int)$c['puerto'] . ';charset=utf8mb4';
+    if ($crear_base) {
+        $pdo = new PDO($dsn, (string)$c['usuario'], (string)$c['clave'], $op);
+        try {
+            $pdo->exec("CREATE DATABASE IF NOT EXISTS `$base` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+        } catch (PDOException $e) {
+            // Sin permiso para crear bases: seguimos por si ya existe.
+        }
+        $pdo->exec("USE `$base`");
+    } else {
+        $pdo = new PDO($dsn . ';dbname=' . $base, (string)$c['usuario'], (string)$c['clave'], $op);
+    }
+    $pdo->exec('SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci');
+    return $pdo;
+}
+
+function conectar_sqlite(): PDO
+{
+    $pdo = new PDO('sqlite:' . CRM_DATOS . '/crm.sqlite', null, null, [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_TIMEOUT => 10,
+    ]);
+    $pdo->exec('PRAGMA busy_timeout = 10000');
+    $pdo->exec('PRAGMA journal_mode = WAL');
+    $pdo->exec('PRAGMA foreign_keys = ON');
+    return $pdo;
+}
+
+// Crea las tablas si no existen. Las fechas se guardan como texto "AAAA-MM-DD HH:MM:SS" en ambos motores.
+function crear_tablas(PDO $pdo, string $motor): void
+{
+    if ($motor === 'mysql') {
+        $fin = ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci';
+        $pdo->exec("CREATE TABLE IF NOT EXISTS usuarios (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            email VARCHAR(190) NOT NULL UNIQUE,
+            clave_hash VARCHAR(255) NOT NULL,
+            creado VARCHAR(19) NOT NULL
+        )$fin");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS contactos (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            nombre VARCHAR(190) NULL,
+            telefono VARCHAR(32) NULL UNIQUE,
+            correo VARCHAR(255) NULL,
+            origen VARCHAR(20) NOT NULL DEFAULT 'Manual',
+            etapa VARCHAR(20) NOT NULL DEFAULT 'Nuevo',
+            notas MEDIUMTEXT NULL,
+            proxima_accion TEXT NULL,
+            proxima_fecha VARCHAR(10) NULL,
+            ia_activa TINYINT NOT NULL DEFAULT 1,
+            necesita_humano TINYINT NOT NULL DEFAULT 0,
+            sesion_web VARCHAR(64) NULL UNIQUE,
+            ultimo_mensaje VARCHAR(19) NULL,
+            creado VARCHAR(19) NOT NULL,
+            actualizado VARCHAR(19) NOT NULL,
+            INDEX idx_contactos_ultimo (ultimo_mensaje)
+        )$fin");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS mensajes (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            contacto_id INT NOT NULL,
+            de VARCHAR(10) NOT NULL,
+            texto MEDIUMTEXT NOT NULL,
+            canal VARCHAR(10) NOT NULL,
+            wa_id VARCHAR(190) NULL UNIQUE,
+            creado VARCHAR(19) NOT NULL,
+            INDEX idx_mensajes_contacto (contacto_id, id),
+            CONSTRAINT fk_mensajes_contacto FOREIGN KEY (contacto_id) REFERENCES contactos(id) ON DELETE CASCADE
+        )$fin");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS ajustes (
+            clave VARCHAR(100) NOT NULL PRIMARY KEY,
+            valor MEDIUMTEXT NULL
+        )$fin");
+        return;
+    }
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL UNIQUE,
+            clave_hash TEXT NOT NULL,
+            creado TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS contactos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT,
+            telefono TEXT UNIQUE,
+            correo TEXT,
+            origen TEXT NOT NULL DEFAULT 'Manual',
+            etapa TEXT NOT NULL DEFAULT 'Nuevo',
+            notas TEXT,
+            proxima_accion TEXT,
+            proxima_fecha TEXT,
+            ia_activa INTEGER NOT NULL DEFAULT 1,
+            necesita_humano INTEGER NOT NULL DEFAULT 0,
+            sesion_web TEXT UNIQUE,
+            ultimo_mensaje TEXT,
+            creado TEXT NOT NULL,
+            actualizado TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS mensajes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contacto_id INTEGER NOT NULL REFERENCES contactos(id) ON DELETE CASCADE,
+            de TEXT NOT NULL,
+            texto TEXT NOT NULL,
+            canal TEXT NOT NULL,
+            wa_id TEXT UNIQUE,
+            creado TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mensajes_contacto ON mensajes(contacto_id, id);
+        CREATE INDEX IF NOT EXISTS idx_contactos_ultimo ON contactos(ultimo_mensaje);
+        CREATE TABLE IF NOT EXISTS ajustes (
+            clave TEXT PRIMARY KEY,
+            valor TEXT
+        );
+    ");
+}
+
+// ¿La petición viene de esta misma PC (no del túnel ni de internet)?
+function peticion_local(): bool
+{
+    $ip = (string)($_SERVER['REMOTE_ADDR'] ?? '');
+    return in_array($ip, ['127.0.0.1', '::1'], true)
+        && empty($_SERVER['HTTP_CF_CONNECTING_IP'])
+        && empty($_SERVER['HTTP_X_FORWARDED_FOR']);
+}
+
+// Pantalla cuando MySQL no responde: explica qué hacer y deja volver a SQLite (solo desde esta PC).
+function fallo_mysql(array $c, string $error): void
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST' && isset($_POST['crm_volver_sqlite']) && peticion_local()) {
+        @unlink(archivo_conexion());
+        registrar('Base de datos: volví a SQLite desde la pantalla de error de MySQL.');
+        header('Location: ' . ($_SERVER['REQUEST_URI'] ?? 'index.php'));
+        exit;
+    }
+    registrar('Base de datos: no pude conectar a MySQL: ' . $error);
+    http_response_code(503);
+    header('Content-Type: text/html; charset=utf-8');
+    $donde = h($c['usuario'] . '@' . $c['servidor'] . ':' . $c['puerto'] . ', base «' . $c['base'] . '»');
+    echo '<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>No pude conectar a MySQL</title>'
+        . '<div style="font-family:system-ui,sans-serif;max-width:600px;margin:60px auto;padding:24px;border:1px solid #f1c0c0;border-radius:12px;background:#fff6f6;line-height:1.5">'
+        . '<h2 style="margin-top:0">⚠️ No pude conectar a la base de datos MySQL</h2>'
+        . '<p>Tu CRM está configurado para usar MySQL (' . $donde . '), pero no responde.</p>'
+        . '<p><b>Lo más común:</b> MySQL está apagado. Abre Laragon, toca <b>Start All</b> y recarga esta página.</p>'
+        . '<p style="font-size:13px;color:#7f1d1d">Error exacto: ' . h($error) . '</p>';
+    if (peticion_local()) {
+        echo '<form method="post" onsubmit="return confirm(&quot;¿Volver a SQLite? Lo que hiciste en MySQL se queda en MySQL.&quot;)">'
+            . '<input type="hidden" name="crm_volver_sqlite" value="1">'
+            . '<button style="font:inherit;padding:10px 16px;border-radius:10px;border:1px solid #ccc;background:#fff;cursor:pointer">Volver a SQLite</button></form>'
+            . '<p style="font-size:13px;color:#555">Al volver a SQLite ves los datos que tenías antes de pasar a MySQL. Lo que se hizo en MySQL se queda allá.</p>';
+    } else {
+        echo '<p style="font-size:13px;color:#555">Para volver a SQLite, abre el CRM desde la PC donde está instalado (http://localhost/…) o borra el archivo <code>datos/conexion.php</code>.</p>';
+    }
+    echo '</div></html>';
+    exit;
+}
 
 function db(): PDO
 {
@@ -158,59 +351,89 @@ function db(): PDO
     if (!is_dir($dir) || !is_writable($dir)) {
         fallo_fatal('No puedo escribir en la carpeta de datos', 'Revisa que la carpeta "' . $dir . '" exista y que se pueda escribir en ella.');
     }
+    $c = conexion_mysql();
+    if ($c) {
+        try {
+            $pdo = conectar_mysql($c);
+            crear_tablas($pdo, 'mysql');
+        } catch (PDOException $e) {
+            $pdo = null;
+            fallo_mysql($c, $e->getMessage());
+        }
+        return $pdo;
+    }
+    if (!extension_loaded('pdo_sqlite')) {
+        fallo_fatal('Falta activar pdo_sqlite en PHP', 'En Laragon: clic derecho en la ventana de Laragon → PHP → Extensions → marca pdo_sqlite. Luego reinicia (Stop / Start All) y recarga esta página.');
+    }
     try {
-        $pdo = new PDO('sqlite:' . $dir . '/crm.sqlite', null, null, [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            PDO::ATTR_TIMEOUT => 10,
-        ]);
-        $pdo->exec('PRAGMA busy_timeout = 10000');
-        $pdo->exec('PRAGMA journal_mode = WAL');
-        $pdo->exec('PRAGMA foreign_keys = ON');
-        $pdo->exec("
-            CREATE TABLE IF NOT EXISTS usuarios (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT NOT NULL UNIQUE,
-                clave_hash TEXT NOT NULL,
-                creado TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS contactos (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                nombre TEXT,
-                telefono TEXT UNIQUE,
-                correo TEXT,
-                origen TEXT NOT NULL DEFAULT 'Manual',
-                etapa TEXT NOT NULL DEFAULT 'Nuevo',
-                notas TEXT,
-                proxima_accion TEXT,
-                proxima_fecha TEXT,
-                ia_activa INTEGER NOT NULL DEFAULT 1,
-                necesita_humano INTEGER NOT NULL DEFAULT 0,
-                sesion_web TEXT UNIQUE,
-                ultimo_mensaje TEXT,
-                creado TEXT NOT NULL,
-                actualizado TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS mensajes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                contacto_id INTEGER NOT NULL REFERENCES contactos(id) ON DELETE CASCADE,
-                de TEXT NOT NULL,
-                texto TEXT NOT NULL,
-                canal TEXT NOT NULL,
-                wa_id TEXT UNIQUE,
-                creado TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_mensajes_contacto ON mensajes(contacto_id, id);
-            CREATE INDEX IF NOT EXISTS idx_contactos_ultimo ON contactos(ultimo_mensaje);
-            CREATE TABLE IF NOT EXISTS ajustes (
-                clave TEXT PRIMARY KEY,
-                valor TEXT
-            );
-        ");
+        $pdo = conectar_sqlite();
+        crear_tablas($pdo, 'sqlite');
     } catch (PDOException $e) {
         fallo_fatal('No pude abrir la base de datos', $e->getMessage());
     }
     return $pdo;
+}
+
+// ¿El error es por un dato repetido (UNIQUE)? Igual en SQLite y MySQL: SQLSTATE 23000.
+function es_duplicado(PDOException $e): bool
+{
+    return (string)$e->getCode() === '23000';
+}
+
+function contar_filas(PDO $pdo): array
+{
+    $n = [];
+    foreach (TABLAS as $t) $n[$t] = (int)$pdo->query("SELECT COUNT(*) FROM $t")->fetchColumn();
+    return $n;
+}
+
+// Copia todos los datos de una base a otra (mismos ids). Si algo falla no deja nada a medias.
+function copiar_datos(PDO $origen, PDO $destino): array
+{
+    $cuenta = [];
+    $es_mysql = $destino->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql';
+    if ($es_mysql) $destino->exec('SET FOREIGN_KEY_CHECKS = 0');
+    $destino->beginTransaction();
+    try {
+        foreach (TABLAS as $t) {
+            $cuenta[$t] = 0;
+            $st = $origen->query("SELECT * FROM $t ORDER BY 1");
+            $ins = null;
+            while ($f = $st->fetch(PDO::FETCH_ASSOC)) {
+                if (!$ins) {
+                    $cols = array_keys($f);
+                    $ins = $destino->prepare("INSERT INTO $t (" . implode(', ', $cols) . ') VALUES (' . implode(', ', array_fill(0, count($cols), '?')) . ')');
+                }
+                $ins->execute(array_values($f));
+                $cuenta[$t]++;
+            }
+        }
+        $destino->commit();
+    } catch (Throwable $e) {
+        if ($destino->inTransaction()) $destino->rollBack();
+        if ($es_mysql) $destino->exec('SET FOREIGN_KEY_CHECKS = 1');
+        throw $e;
+    }
+    if ($es_mysql) $destino->exec('SET FOREIGN_KEY_CHECKS = 1');
+    return $cuenta;
+}
+
+// Guarda datos/conexion.php de forma segura (primero un temporal, luego se renombra).
+function escribir_conexion(array $c): bool
+{
+    $datos = ['tipo' => 'mysql', 'servidor' => (string)$c['servidor'], 'puerto' => (int)$c['puerto'],
+        'base' => (string)$c['base'], 'usuario' => (string)$c['usuario'], 'clave' => (string)$c['clave']];
+    $php = "<?php\n// Conexión a MySQL del CRM. Si borras este archivo, el CRM vuelve a usar SQLite (datos/crm.sqlite).\nreturn "
+        . var_export($datos, true) . ";\n";
+    $destino = archivo_conexion();
+    $tmp = $destino . '.tmp';
+    if (@file_put_contents($tmp, $php, LOCK_EX) === false) return false;
+    if (!@rename($tmp, $destino)) {
+        @unlink($destino);
+        if (!@rename($tmp, $destino)) return false;
+    }
+    if (function_exists('opcache_invalidate')) @opcache_invalidate($destino, true);
+    return true;
 }
 
 function q(string $sql, array $params = []): PDOStatement
@@ -238,9 +461,20 @@ function ajuste(string $clave, string $def = ''): string
     return array_key_exists($clave, $a) ? $a[$clave] : $def;
 }
 
+// Guardar un ajuste (sirve igual en SQLite y MySQL).
 function guardar_ajuste(string $clave, string $valor): void
 {
-    q('INSERT OR REPLACE INTO ajustes (clave, valor) VALUES (?, ?)', [$clave, $valor]);
+    $existe = q('SELECT COUNT(*) FROM ajustes WHERE clave = ?', [$clave])->fetchColumn();
+    if ((int)$existe > 0) {
+        q('UPDATE ajustes SET valor = ? WHERE clave = ?', [$valor, $clave]);
+    } else {
+        try {
+            q('INSERT INTO ajustes (clave, valor) VALUES (?, ?)', [$clave, $valor]);
+        } catch (PDOException $e) {
+            if (!es_duplicado($e)) throw $e;
+            q('UPDATE ajustes SET valor = ? WHERE clave = ?', [$valor, $clave]);
+        }
+    }
     ajustes_todos(true);
 }
 
@@ -314,9 +548,13 @@ function canal_contacto(array $c): string
 function guardar_mensaje(int $contacto_id, string $de, string $texto, string $canal, ?string $wa_id = null): int
 {
     $t = ahora();
-    $st = q('INSERT OR IGNORE INTO mensajes (contacto_id, de, texto, canal, wa_id, creado) VALUES (?, ?, ?, ?, ?, ?)',
-        [$contacto_id, $de, $texto, $canal, $wa_id ?: null, $t]);
-    if ($st->rowCount() === 0) return 0;
+    try {
+        q('INSERT INTO mensajes (contacto_id, de, texto, canal, wa_id, creado) VALUES (?, ?, ?, ?, ?, ?)',
+            [$contacto_id, $de, $texto, $canal, $wa_id ?: null, $t]);
+    } catch (PDOException $e) {
+        if (es_duplicado($e)) return 0;
+        throw $e;
+    }
     $id = (int)db()->lastInsertId();
     q('UPDATE contactos SET ultimo_mensaje = ?, actualizado = ? WHERE id = ?', [$t, $t, $contacto_id]);
     return $id;
@@ -477,7 +715,7 @@ function ia_responder(int $contacto_id): string
         . "Datos que ya tienes del cliente:\n" . implode("\n", $datos) . "\n\n"
         . "=== LO QUE SABES DEL NEGOCIO ===\n" . $sabe;
 
-    $hist = q('SELECT de, texto FROM (SELECT id, de, texto FROM mensajes WHERE contacto_id = ? ORDER BY id DESC LIMIT 20) ORDER BY id ASC', [$contacto_id])->fetchAll();
+    $hist = q('SELECT de, texto FROM (SELECT id, de, texto FROM mensajes WHERE contacto_id = ? ORDER BY id DESC LIMIT 20) AS ultimos ORDER BY id ASC', [$contacto_id])->fetchAll();
     $contents = [];
     foreach ($hist as $m) {
         $rol = $m['de'] === 'cliente' ? 'user' : 'model';
@@ -512,7 +750,7 @@ function ia_responder(int $contacto_id): string
     $nombre = trim((string)($d['nombre'] ?? ''));
     if ($nombre !== '' && nombre_desconocido($c['nombre'])) $cambios['nombre'] = mb_substr($nombre, 0, 100);
     $correo = trim((string)($d['correo'] ?? ''));
-    if ($correo !== '' && empty($c['correo']) && filter_var($correo, FILTER_VALIDATE_EMAIL)) $cambios['correo'] = $correo;
+    if ($correo !== '' && empty($c['correo']) && strlen($correo) <= 190 && filter_var($correo, FILTER_VALIDATE_EMAIL)) $cambios['correo'] = $correo;
     $interes = trim((string)($d['interes'] ?? ''));
     if ($interes !== '' && trim((string)$c['notas']) === '') $cambios['notas'] = 'Le interesa: ' . mb_substr($interes, 0, 300);
     $etapa = $c['etapa'];

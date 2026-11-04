@@ -101,6 +101,16 @@ Aparece una burbuja abajo a la derecha. Lo que escriben tus visitantes llega a *
 
 El proyecto trae un `Dockerfile`. En **EasyPanel**: crea un servicio tipo App desde este repositorio de GitHub, con Dockerfile, y **monta un volumen en `/var/www/datos`** (ahí se guarda tu base de datos; sin el volumen la perderías en cada actualización). Ponle tu dominio con https y usa `https://tu-dominio/webhook.php` como Callback URL en Meta.
 
+## ¿Prefieres MySQL?
+
+No hace falta: por defecto todo se guarda en un archivo (SQLite) y funciona perfecto. Si prefieres MySQL:
+
+1. En Laragon toca **Start All** (así MySQL queda encendido).
+2. En tu CRM: **Ajustes → Base de datos**. Los datos de Laragon ya vienen puestos: servidor `localhost`, puerto `3306`, base `crm`, usuario `root` y contraseña **vacía**.
+3. Deja marcado **"Copiar mis datos actuales"** y toca **Probar y pasar a MySQL**. Se crea la base y se copian tu cuenta, contactos, conversaciones y llaves.
+
+Para regresar, toca **Volver a SQLite** (lo que hiciste en MySQL se queda en MySQL). Si un día MySQL está apagado, el CRM te lo dice y te deja volver a SQLite desde tu PC.
+
 ## Seguridad
 
 - Tus llaves (Gemini, Meta) y tus conversaciones se guardan **solo en tu PC**, en la carpeta `datos/`.

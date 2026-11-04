@@ -11,7 +11,7 @@ if (!hay_usuarios()) {
         $email = strtolower(trim((string)($_POST['email'] ?? '')));
         $c1 = (string)($_POST['clave'] ?? '');
         $c2 = (string)($_POST['clave2'] ?? '');
-        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) $error = 'Escribe un correo válido.';
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 190) $error = 'Escribe un correo válido.';
         elseif (mb_strlen($c1) < 8) $error = 'La contraseña debe tener al menos 8 caracteres.';
         elseif ($c1 !== $c2) $error = 'Las dos contraseñas no coinciden.';
         elseif (hay_usuarios()) $error = 'Ya existe una cuenta. Entra con ella.';

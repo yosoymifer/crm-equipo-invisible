@@ -63,7 +63,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($accion === 'datos') {
         $nombre = trim((string)($_POST['nombre'] ?? ''));
         $tel = normalizar_telefono((string)($_POST['telefono'] ?? ''));
-        $correo = trim((string)($_POST['correo'] ?? ''));
+        $correo = mb_substr(trim((string)($_POST['correo'] ?? '')), 0, 190);
         $etapa = in_array($_POST['etapa'] ?? '', ETAPAS, true) ? $_POST['etapa'] : $c['etapa'];
         $pa = trim((string)($_POST['proxima_accion'] ?? ''));
         $pf = (string)($_POST['proxima_fecha'] ?? '');

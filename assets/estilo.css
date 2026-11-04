@@ -233,3 +233,5 @@ textarea.codigo { font-family: ui-monospace, Consolas, monospace; font-size: 13p
 /* botones de formularios: no ocupan todo el ancho (salvo en tarjetas angostas) */
 .formulario > .btn { align-self: flex-start; }
 .caja-acceso .formulario > .btn, .datos .formulario > .btn { align-self: stretch; }
+.formulario label.casilla { flex-direction: row; align-items: center; gap: 8px; font-weight: 500; }
+.casilla input { width: auto; }
