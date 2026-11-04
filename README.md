@@ -20,6 +20,22 @@ Funciona en tu PC con Laragon. No necesitas saber programar.
 
 > ¿Sale un error de "pdo_sqlite" o "curl"? En Laragon: clic derecho → **PHP → Extensions** → marca `pdo_sqlite` y `curl`, y reinicia (Stop / Start All).
 
+### En Mac (sin Laragon)
+
+En la app **Terminal**:
+
+```
+brew install php cloudflared
+git clone https://github.com/yosoymifer/crm-equipo-invisible.git crm
+cd crm
+php -S localhost:8000 router.php
+```
+
+Abre **http://localhost:8000** y crea tu cuenta. Deja esa ventana de Terminal abierta mientras usas el CRM.
+Para el túnel, abre otra ventana: `cloudflared tunnel --url http://localhost:8000`. Tu webhook es `https://xxxx.trycloudflare.com/webhook.php` (sin `/crm`).
+
+> Usa siempre `router.php` en el comando: protege la carpeta `datos/`, donde se guardan tus llaves.
+
 ## 2. Dale cerebro: llave de Gemini (gratis)
 
 1. Entra a **https://aistudio.google.com/apikey** con tu cuenta de Google.
