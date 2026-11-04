@@ -1,0 +1,4 @@
+.git
+datos/*.sqlite*
+datos/*.log
+datos/sesiones
